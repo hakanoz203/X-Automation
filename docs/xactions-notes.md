@@ -1,162 +1,139 @@
-# XActions Entegrasyon Notları
+# X Entegrasyon Notları — `src/lib/x-graphql.js` + `src/lib/xactions-client.js`
 
-> ## ✅ NİHAİ ÇÖZÜM: Kendi minimal GraphQL client'ı (harici X kütüphanesi YOK)
->
-> Hem XActions hem agent-twitter-client elendi (aşağıda). Çözüm: `src/lib/x-graphql.js`
-> — saf `fetch` ile X'in internal GraphQL API'sine doğrudan authenticated istek.
->
-> **Neden çalışıyor (canlı doğrulandı):**
-> - **Cookie'ler geçerli, IP çalışıyor.** Ham `UserByScreenName` isteği 200 döndü; sorun
->   hep kütüphanelerdeydi.
-> - **queryId'ler X'in canlı bundle'ından dinamik çekiliyor** (`x.com/` → `main.<hash>.js`
->   → regex `queryId:"X",operationName:"OP"`). Fallback hardcoded (güncel 2026-07):
->   `SearchTimeline: Bcw3RzK-PatNAmbnw54hFw`, `CreateTweet: R5EPiGHgSqbTYFyozd-gFw`.
-> - **SearchTimeline artık POST** (GET → boş 404 — takıldığımız yer buydu). Body: `{variables, features}`.
-> - Auth header'ları: `authorization: Bearer <public web bearer>`, `cookie: auth_token=..; ct0=..`,
->   `x-csrf-token: <ct0>`, `x-twitter-auth-type: OAuth2Session`, `x-twitter-active-user: yes`.
-> - Medya: chunked upload `upload.x.com/i/media/upload.json` (INIT→APPEND→FINALIZE) → `media_id_string`
->   → `CreateTweet` POST (`media.media_entities` + `reply.in_reply_to_tweet_id`).
->
-> **Canlı test durumu:** search ✔, medya yükleme ✔ (gerçek media_id), OpenAI ✔, fal.ai ✔.
-> `createReply` gerçek post olduğu için kullanıcı onayıyla test edilir.
->
-> **Bakım notu:** X queryId'leri periyodik değişir; dinamik çekim bunu otomatik yakalar.
-> Bundle formatı kökten değişirse `x-graphql.js`'teki FALLBACK_QUERY_IDS'i güncelle.
->
-> ---
->
-> ## ⚠️ ELENEN 2: agent-twitter-client (bozuk auth akışı)
->
-> **XActios 3.1.0 kullanılmıyor.** Canlı testte XActions'ın hardcode ettiği X GraphQL
-> `queryId`/endpoint'lerinin **eskimiş** olduğu ve TÜM çağrıların `404` döndürdüğü
-> tespit edildi (SearchTimeline, UserByScreenName, TweetResultByRestId, hatta
-> cookie'siz `guest/activate` bile). Bu bir kimlik-bilgisi veya IP sorunu **değil**:
-> - Ortamdan X'e erişim var (public syndication API'den tweet #20 `200` döndü).
-> - Guest-token (cookie kullanmaz) bile 404 → sorun kütüphanede.
->
-> Yerine **`agent-twitter-client`** (aktif bakımlı, twitter-scraper forku) seçildi.
-> Canlı testte X'in search endpoint'ine **doğru queryId ile ulaştı** (404 yok).
-> Kullanılan API (`src/lib/xactions-client.js` bunu sarar):
-> ```js
-> import { Scraper, SearchMode } from 'agent-twitter-client';
-> const s = new Scraper();
-> await s.setCookies([                       // Domain=.twitter.com ŞART (jar host'u)
->   `auth_token=${AUTH}; Domain=.twitter.com; Path=/; Secure; HttpOnly`,
->   `ct0=${CT0}; Domain=.twitter.com; Path=/; Secure`,
-> ]);
-> for await (const t of s.searchTweets(kw, limit, SearchMode.Top)) { ... }
-> // Tweet: { id, text, username, likes, retweets, replies, views, permanentUrl, photos }
-> await s.sendTweet(text, replyToTweetId, [{ data: Buffer, mediaType: 'image/png' }]);
-> ```
->
-> **AÇIK BLOKER — cookie yenileme gerekli:** `.env`'deki `auth_token`/`ct0` sağlam
-> formatta (40 / 160 karakter) ama X tarafından **reddediliyor** (agent-twitter-client
-> search: `401 code 32 "Could not authenticate you"`). Token süresi dolmuş veya ct0 ile
-> auth_token farklı oturumlardan. Çözüm: x.com'da giriş yapıp DevTools → Application →
-> Cookies'ten **aynı anda** taze `auth_token` + `ct0` alıp `.env`'i güncellemek.
->
-> Aşağıdaki XActions notları **tarihsel/referans** olarak korunuyor (uygulanmıyor).
+X ile tüm iletişim harici kütüphane olmadan, X'in internal GraphQL API'sine cookie ile
+authenticated istek atan kendi client'ımızla yapılır. Resmi API değil; hesap ban riski gerçek,
+bu yüzden kadans ve limit önlemleri uygulama katmanında (`CLAUDE.md` §7).
 
----
+## Katmanlar
 
-Bu dosya, `xactions` (v3.1.0) npm paketinin kaynağı incelenerek çıkarıldı. Sistem, XActions'ı **doğrudan Node kütüphanesi** olarak, spesifik olarak **HTTP-only scraper** katmanı üzerinden kullanır (Puppeteer / better-sqlite3 / Prisma gerektirmez).
+- **`x-graphql.js`** — ham X GraphQL: `searchTweets`, `uploadImage`, `createReply`,
+  `deleteTweet`, `verifyAuth`, `proxyStatus`, `checkExitIp`. Tüm HTTP istekleri tek `xfetch`
+  sarmalayıcısından geçer.
+- **`xactions-client.js`** — ajanların kullandığı sarmalayıcı: `search`, `postReply`, `checkAuth`,
+  `tweetUrl`. Her çağrı `withRetry` içinden geçer:
+  - `throttle()` — ardışık X aksiyonları arası en az 1,5 sn + 0-0,5 sn jitter.
+  - varsayılan 2 tekrar (toplam 3 deneme), denemeler arası 1 sn × deneme.
+  - 401/403 (auth), `err.throttled` (boş `tweet_results`) ve `err.noRetry` (226/344) durumunda
+    **tekrar yapmaz**, hemen fırlatır; bayraklar (`throttled`, `noRetry`, `graphqlCode`, `status`)
+    üst katmana taşınır. Direct-post fallback ve retry akışı bunlara göre karar verir.
 
-## Kritik karar: Neden HTTP scraper?
-
-`xactions` paketinin ana export'u (`import ... from 'xactions'`) Puppeteer + Prisma + better-sqlite3 çeker. Bu ortamda **build araçları (make/gcc) yok**, dolayısıyla `better-sqlite3` native derlenemiyor. Ancak:
-
-- Paket `--ignore-scripts` ile kurulabiliyor (native derleme atlanır).
-- `xactions/scrapers/twitter/http` alt-modülü **saf HTTP** (fetch/axios tabanlı, Twitter internal GraphQL API). Native bağımlılık çekmeden import oluyor (~60ms). İhtiyacımız olan tüm fonksiyonlar burada.
-
-> **Kurulum:** `npm install xactions --ignore-scripts`
-> Bizim DB katmanımız `better-sqlite3` yerine **Node 24 yerleşik `node:sqlite`** kullanır (native derleme yok).
+Ajanlar `x-graphql.js`'i doğrudan çağırmaz; yeni bir X isteği eklenecekse `xfetch` üzerinden
+yazılır ve `xactions-client.js`'te `withRetry` ile sarılır.
 
 ## Kimlik doğrulama
 
-Cookie string ile: `auth_token=<...>; ct0=<...>`
+`.env`: `XACTIONS_AUTH_TOKEN` (x.com `auth_token` cookie'si) + `XACTIONS_CT0` (`ct0` cookie'si).
+İkisi **aynı oturumdan** alınır; farklı oturumlardan gelirse X 401 döner.
 
-`.env`'de mevcut:
-- `XACTIONS_AUTH_TOKEN` → `auth_token`
-- `XACTIONS_CT0` → `ct0`
-
-Cookie string'i şöyle kur: `` `auth_token=${AUTH_TOKEN}; ct0=${CT0}` ``
-
-## Kullanılan API yüzeyi
-
-### 1. Scraper oluşturma (auth'lu)
-```js
-import { createHttpScraper } from 'xactions/scrapers/twitter/http';
-const scraper = await createHttpScraper({
-  cookies: `auth_token=${process.env.XACTIONS_AUTH_TOKEN}; ct0=${process.env.XACTIONS_CT0}`,
-  rateLimitStrategy: 'wait', // 429'da bekler; 'error' fırlatır
-});
-// scraper.client → düşük seviye TwitterHttpClient (search için gerekli)
-// scraper.uploadImage / scraper.replyToTweet / scraper.postTweet ... → bağlı metodlar
+`authHeaders()` her isteğe ekler:
+```
+authorization: Bearer <X public web bearer>
+cookie: auth_token=<..>; ct0=<..>
+x-csrf-token: <ct0>
+x-twitter-auth-type: OAuth2Session
+x-twitter-active-user: yes
+x-twitter-client-language: en
+referer: https://x.com/   origin: https://x.com   User-Agent: <tarayıcı UA>
 ```
 
-### 2. Keyword arama (POPÜLER tweetler)
-`searchTweets` http barrel'ında **re-export edilmemiş**, iç yoldan import edilir:
-```js
-import { searchTweets } from 'xactions/scrapers/twitter/http/search.js';
-// NOT: package exports map bu alt-yolu açmıyor; tam yol ile:
-// import { searchTweets } from '.../node_modules/xactions/src/scrapers/twitter/http/search.js'
-const tweets = await searchTweets(scraper.client, keyword, {
-  limit: 200,        // internal pagination ile bu sayıya kadar
-  type: 'Top',       // 'Top' = popüler | 'Latest' | 'Photos' | 'Videos'
-  lang: 'en',        // opsiyonel
-  minLikes: 10,      // opsiyonel ön-filtre (min_faves)
-});
-```
-`type: 'Top'` + `minLikes` popülerlik gereksinimini (spec §4.1) karşılar.
+`verifyAuth()` / `checkAuth()` `UserByScreenName` ile cookie'leri doğrular; dashboard sağ üstteki
+"X bağlı" göstergesi bundan beslenir (`/api/health`).
 
-### 3. Dönen tweet nesnesi (parseTweetData)
+**Cookie yenileme:** x.com'da tam çıkış-giriş → DevTools → Application → Cookies → `auth_token` +
+`ct0` aynı anda → `.env`'de yalnız bu iki satır → `sudo systemctl restart x-automation` →
+`npm run auth-test`.
+
+## queryId çözümleme
+
+X GraphQL endpoint'leri `https://x.com/i/api/graphql/<queryId>/<operationName>` şeklindedir ve
+queryId'ler X'in web bundle'ıyla periyodik değişir. `resolveQueryIds()`:
+
+1. `https://x.com/` HTML'inden `main.<hash>.js` bundle URL'ini bulur,
+2. bundle içinde `queryId:"<id>",operationName:"<op>"` deseniyle her operasyonun güncel id'sini
+   çeker,
+3. bulunanları `FALLBACK_QUERY_IDS` üzerine yazar; bundle okunamazsa fallback kullanılır.
+
+Sonuç process ömrü boyunca cache'lenir (`_queryIds`). Fallback tablosu: `SearchTimeline`,
+`CreateTweet`, `DeleteTweet`, `TweetResultByRestId`, `UserByScreenName`. Bundle formatı kökten
+değişirse `FALLBACK_QUERY_IDS` elle güncellenir.
+
+## Arama — `searchTweets(keyword, { limit, product })`
+
+- `SearchTimeline` **POST** ile çağrılır (GET 404 döner). Gövde `{ variables, features }`;
+  `features` kanıtlanmış geniş feature setidir (eksik feature X'te 400 üretir).
+- `product` `'Top' | 'Latest'`; sistem `Top` kullanır.
+- `limit`'e ulaşana ya da cursor bitene kadar `bottom` cursor ile sayfalanır; `guard` sayacı
+  sonsuz döngüyü keser.
+- Keyword'e scraping-agent tarafından `min_faves:` ve `since:` operatörleri eklenmiş gelir.
+  `-filter:replies` operatörü SearchTimeline'da 0 sonuç döndürdüğü için kullanılmaz; yanıt eleme
+  kodda (`isReply`) yapılır.
+
+`parseTweetResult` her tweeti şu nesneye çevirir:
 ```js
 {
-  id: '1868...',                  // orijinal tweet id (PRIMARY KEY)
-  text: 'full text...',
-  createdAt: '2026-07-08T...Z',   // ISO
-  author: { id, username, name, avatar, verified },
-  metrics: { likes, retweets, replies, quotes, bookmarks, views },
-  media: [{ type, url, ... }],
-  isReply, isRetweet, lang, ...
+  id, text, author,                     // author = screen_name
+  likes, retweets, replies, quotes,
+  views,                                // t.views.count; yoksa 0
+  isReply,                              // in_reply_to_status_id_str || in_reply_to_user_id_str
+  createdAt,                            // X'in created_at string'i
+  url,                                  // https://x.com/<author>/status/<id>
+  media: string[],                      // aşağıda
 }
 ```
-- **Permalink alanı YOK** → kur: `https://x.com/${author.username}/status/${id}`
-- Engagement skoru için: `metrics.likes/retweets/replies/quotes` (spec §4.2 formülü birebir uyumlu).
+`TweetWithVisibilityResults` sarmalı da açılır.
 
-### 4. Görsel yükleme → media_id
-```js
-const { mediaId } = await scraper.uploadImage(imagePathOrBuffer); // max 5 MB (JPEG/PNG/GIF/WebP)
-// dönüş: { mediaId: string, mediaKey: string|null }
+## Medya çıkarımı — `extractMedia(legacy)`
+
+`legacy.extended_entities.media` (yoksa `entities.media`) içindeki her öğenin `media_url_https`
+değeri alınır. Fotoğrafta bu görselin kendisi, video/GIF'te X'in poster karesidir. Giggle yalnız
+görsel (jpeg/png/webp) kabul ettiği ve mp4 gönderilirse 422 `MEDIA_FETCH_FAILED` verdiği için
+video URL'i hiç kullanılmaz. Dizi `tweets.tweet_media` (JSON) kolonunda saklanır ve Giggle
+isteğinin `media` alanı olur; medyasız tweette `[]`.
+
+## Reply postlama
+
+`postReply(tweetId, text, imagePathOrBuffer)`:
+
+1. **`uploadImage(input, mimeType)`** — chunked upload `https://upload.x.com/i/media/upload.json`:
+   `INIT` (total_bytes, media_type, media_category=tweet_image) → `APPEND` (undici `FormData`,
+   tek segment) → `FINALIZE` → gerekirse `STATUS` polling → `media_id_string`. Dosya yolu ya da
+   Buffer alır; mime uzantıdan çıkarılır (`mimeFromPath`).
+2. **`createReply(tweetId, text, mediaIds)`** — `CreateTweet` POST:
+   `variables.tweet_text`, `variables.reply.in_reply_to_tweet_id`,
+   `variables.media.media_entities=[{media_id, tagged_users:[]}]`. Dönen
+   `data.create_tweet.tweet_results.result.rest_id` reply id'sidir; `posted_reply_id`'ye yazılır.
+
+Gerçek post olduğu için `createReply` yalnız onaylanmış kayıtlar için ve içerik gösterilip açık onay
+alınmadan test amaçlı çalıştırılmaz.
+
+## X hata sınıflandırması (`graphqlPost` + `createReply`)
+
+| Sinyal | Anlam | Bayrak | Davranış |
+|---|---|---|---|
+| HTTP 401/403 | cookie geçersiz/süresi dolmuş | `status` | retry yok, `failed`; cookie yenile |
+| GraphQL **226** | "might be automated" — anti-otomasyon flag'i | `noRetry` | retry yok, `failed` |
+| GraphQL **344** | hesabın X günlük gönderim kotası (~24 saat kayan) | `noRetry` | retry yok, `failed` |
+| boş `tweet_results` `{}` | spam/duplicate throttle; dakikalar sonra aynı içerik geçer | `throttled` | hızlı retry yok; direct-post beklet-tekrar-dene, tükenirse sonraya zamanlar |
+| 429 | rate limit | `status` | `withRetry` 1-2 sn arayla en fazla 2 tekrar |
+
+Bunlar bizim `daily_post_limit` kontrolünden bağımsızdır; bizimki yerel kontroldür ve
+`blocked_daily_limit` üretir, X'e istek bile atılmaz.
+
+## Proxy
+
+`.env`'de `X_PROXY_URL=http://user:pass@host:port` set edilirse `xfetch` tüm X isteklerini undici
+`ProxyAgent` dispatcher'ı ile bu proxy'den geçirir. `fetch`, `FormData` ve `ProxyAgent` üçü de
+`undici` paketinden import edilir; Node'un global `fetch`'i `ProxyAgent` ile uyumsuzdur
+(`invalid onRequestStart method`). Giggle istekleri normal `fetch` kullandığı için etkilenmez.
+
+- `proxyStatus()` → `{ enabled, host }`; orchestrator başlangıç logu ve `/api/health.proxy`.
+- `checkExitIp()` → `{ proxied, direct }`; `npm run auth-test` ikisini yan yana basar, proxy
+  çalışıyorsa farklı olmalı.
+- Yönlendirme **post anında** belirlenir; DB'de IP/proxy bilgisi tutulmaz.
+- Şu an `X_PROXY_URL` yorumda; X trafiği doğrudan VPS IP'sinden gidiyor.
+
+## Test
+
+```bash
+npm run auth-test     # proxy durumu + çıkış IP + cookie doğrulama + küçük bir arama
 ```
-
-### 5. Metin + görsel REPLY (gating premisi — DESTEKLENİYOR ✅)
-```js
-await scraper.replyToTweet(tweetId, replyText, { mediaIds: [mediaId] });
-// içte postTweet(client, text, { replyTo: tweetId, mediaIds }) çağırır
-```
-> **Gating risk çözüldü:** Metin+görsel reply tam destekli (chunked upload → `upload.x.com`, GraphQL CreateTweet `media_entities` + `reply.in_reply_to_tweet_id`). Fallback'e gerek yok.
-
-## Hata sınıfları
-`xactions/scrapers/twitter/http` şunları export eder: `TwitterApiError, RateLimitError, AuthError, NotFoundError, NetworkError`. post-agent bunları yakalayıp `status='failed'` + `error_message` yazar (spec §4.4).
-
-## Rate-limit / ban riski
-- `createHttpScraper({ rateLimitStrategy: 'wait' })` → 429'da otomatik bekler.
-- Yine de spec §7 önlemleri (günlük limit, aksiyonlar arası jitter) **uygulama katmanında** zorunlu — tüm X aksiyonları `src/lib/xactions-client.js`'ten geçer (tek merkez).
-- Resmi API değil (cookie tabanlı) → hesap ban riski gerçek; günlük post limiti düşük tutulmalı.
-
-## Özet eşleme (spec → gerçek API)
-| Spec (MCP tool) | Gerçek kullanım (HTTP kütüphane) |
-|---|---|
-| `x_search_tweets` | `searchTweets(client, kw, { type:'Top', limit })` |
-| `x_get_tweet_metrics` | search sonucundaki `tweet.metrics` (ayrı çağrı gerekmez) |
-| `x_reply` (metin+medya) | `uploadImage()` → `replyToTweet(id, text, { mediaIds })` |
-
-## Tweet medya çıkarımı (Giggle için — 2026-07-28)
-Giggle çizgi-roman servisi hedef tweetin görselini/videosunu ister. Medya URL'leri **ayrı bir
-tweet-detay çağrısına gerek kalmadan** `src/lib/x-graphql.js` `parseTweetResult` içinde search
-payload'ından çıkarılır: `legacy.extended_entities.media` (yoksa `entities.media`) →
-- `type==='photo'` → `media_url_https`
-- `type==='video'|'animated_gif'` → `video_info.variants` içinden en yüksek bitrate `video/mp4`
-Çıkan dizi tweet nesnesinde `media` alanı olur, `tweets.tweet_media` (JSON) kolonunda saklanır ve
-Giggle isteğinin `media` alanına konur. Medya yoksa `[]` (tweet yine de işlenir). Detay: `CLAUDE.md` §12.6.
