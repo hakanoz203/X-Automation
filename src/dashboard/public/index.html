@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>X Otomatik Reply</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">✕</span>
+      <span class="brand-text">
+        <strong>Otomatik Reply</strong>
+        <span class="brand-sub">nöbet konsolu</span>
+      </span>
+    </div>
+
+    <div id="health" class="status-strip" aria-live="polite">
+      <div class="pill pill-skeleton"></div>
+      <div class="pill pill-skeleton"></div>
+      <div class="pill pill-skeleton"></div>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Bölümler">
+    <button data-tab="scrape" class="active" role="tab" aria-selected="true">Keyword &amp; Scrape</button>
+    <button data-tab="queue" role="tab" aria-selected="false">
+      Onay Kuyruğu <span id="queueCount" class="badge" hidden>0</span>
+    </button>
+    <button data-tab="schedule" role="tab" aria-selected="false">Schedule</button>
+    <button data-tab="accounts" role="tab" aria-selected="false">Hesaplar</button>
+    <button data-tab="settings" role="tab" aria-selected="false">Ayarlar</button>
+  </nav>
+
+  <main>
+    <!-- 1. Scrape -->
+    <section id="tab-scrape" class="tab active" role="tabpanel">
+      <div class="section-head">
+        <h2>Keyword ile popüler tweet çek</h2>
+        <p class="hint">Birden fazla keyword'ü virgülle ayır. Scrape biter bitmez en yüksek etkileşimli tweetler onay kuyruğuna alınır; cevap metni + çizgi-roman görseli, onayladıktan sonra Giggle ile üretilir.</p>
+      </div>
+
+      <div class="row">
+        <input id="keywords" type="text" autocomplete="off" spellcheck="false"
+               placeholder="claude ai, llm, prompt engineering" aria-label="Keyword'ler" />
+        <button id="scrapeBtn" class="btn-primary">Scrape et</button>
+      </div>
+
+      <div id="scrapeResult" class="scrape-result" hidden></div>
+    </section>
+
+    <!-- 2. Onay kuyruğu -->
+    <section id="tab-queue" class="tab" role="tabpanel">
+      <div class="section-head">
+        <h2>Onay Kuyruğu</h2>
+        <p class="hint">Yalnızca hedef tweet gösterilir. Onayladığında Giggle çizgi-roman cevabını üretir ve 24 saate dağıtılarak planlanır. <strong>Reddettiklerin bir daha asla önerilmez.</strong></p>
+      </div>
+      <div id="queueList" class="cards"></div>
+    </section>
+
+    <!-- 3. Schedule -->
+    <section id="tab-schedule" class="tab" role="tabpanel">
+      <div class="section-head">
+        <h2>Schedule</h2>
+        <p class="hint">Planlanmış, postlanmış ve başarısız olmuş tüm reply'lar.</p>
+      </div>
+
+      <!-- İmza öğesi: 24 saatlik ray -->
+      <div class="rail-panel">
+        <div class="rail-head">
+          <div>
+            <span class="micro">Bugün</span>
+            <div id="railCaption" class="rail-caption">—</div>
+          </div>
+          <div id="nextPost" class="next-post"></div>
+        </div>
+        <div id="rail" class="rail" aria-hidden="true"></div>
+        <div class="rail-legend">
+          <span><i class="dot dot-scheduled"></i>Planlı</span>
+          <span><i class="dot dot-posted"></i>Postlandı</span>
+          <span><i class="dot dot-failed"></i>Başarısız</span>
+          <span><i class="dot dot-now"></i>Şimdi</span>
+        </div>
+      </div>
+
+      <div id="scheduleFilters" class="chips" role="group" aria-label="Duruma göre filtrele"></div>
+      <div id="scheduleList" class="cards"></div>
+    </section>
+
+    <!-- 4. Hesaplar (E: reply kayıt defteri) -->
+    <section id="tab-accounts" class="tab" role="tabpanel">
+      <div class="section-head">
+        <h2>Hesap Reply Kayıt Defteri</h2>
+        <p class="hint" id="accountsInfo">Son pencerede hangi hesaba kaç reply atıldığı. Sınırı dolan hesapların yeni tweetleri scrape'te elenir.</p>
+      </div>
+      <div id="accountsList" class="cards"></div>
+    </section>
+
+    <!-- 5. Ayarlar -->
+    <section id="tab-settings" class="tab" role="tabpanel">
+      <div class="section-head">
+        <h2>Ayarlar</h2>
+        <p class="hint">Değişiklikler anında geçerli olur; servisi yeniden başlatman gerekmez.</p>
+      </div>
+
+      <div id="settingsForm" class="settings"></div>
+      <div class="settings-actions">
+        <button id="saveSettings" class="btn-primary">Kaydet</button>
+        <span id="settingsSaved" class="saved" aria-live="polite"></span>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Onay modalı (geri alınamaz aksiyonlar için) -->
+<div id="modalBackdrop" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <h3 id="modalTitle">Bu tweeti reddet</h3>
+    <p id="modalBody" class="modal-body"></p>
+    <div class="modal-actions">
+      <button id="modalCancel" class="btn-ghost">Vazgeç</button>
+      <button id="modalConfirm" class="btn-danger">Reddet</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
+

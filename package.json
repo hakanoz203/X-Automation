@@ -1,0 +1,23 @@
+{
+  "name": "x-automation",
+  "version": "0.1.0",
+  "description": "",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "auth-test": "node scripts/auth-test.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "undici": "^8.7.0"
+  }
+}
